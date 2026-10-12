@@ -1,0 +1,108 @@
+name: Build APKs from ZIP
+
+# Upload DroidForge-src.zip to the root of the repository (next to the .github folder).
+# Every push that adds/changes a .zip file builds three APKs. You can also run it by hand
+# from the "Actions" tab ("Run workflow").
+#
+#   lite   - no models inside. The app asks on first run which AI mode to use and downloads
+#            the models then (small download, needs internet).
+#   basic  - the small explainer model is packed inside (works fully offline).
+#   hebrew - the small model AND the Hebrew translator are packed inside (~2.2 GB APK, offline).
+#
+# The heavy model (~3.9 GB) is too big to pack into an APK, so it is always downloaded
+# from the app's AI settings.
+on:
+  push:
+    paths:
+      - '*.zip'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lite
+            flags: ''
+            experimental: false
+          - name: basic
+            flags: '-PaiBundle=basic'
+            experimental: false
+          - name: hebrew
+            flags: '-PaiBundle=hebrew'
+            # The APK is >2 GB; if the Android packaging tools refuse it, the other two still build.
+            experimental: true
+    continue-on-error: ${{ matrix.experimental }}
+
+    steps:
+      - name: Free disk space (bundled builds are big)
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/node_modules || true
+          df -h /
+
+      - name: Checkout (only to get the zip)
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Extract the zip OUTSIDE the git workspace
+        id: extract
+        run: |
+          set -e
+          ZIP=$(ls -t *.zip | head -n 1)
+          echo "Using $ZIP"
+          mkdir -p "$RUNNER_TEMP/proj"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/proj"
+          GRADLEW=$(find "$RUNNER_TEMP/proj" -maxdepth 3 -name gradlew | head -n 1)
+          [ -n "$GRADLEW" ] || { echo "gradlew not found inside the zip"; exit 1; }
+          DIR=$(dirname "$GRADLEW")
+          chmod +x "$GRADLEW"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('*.zip') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Unit tests of the AI helper (lite job only, non-blocking)
+        if: matrix.name == 'lite'
+        continue-on-error: true
+        working-directory: ${{ steps.extract.outputs.dir }}
+        run: ./gradlew :core:app:testDebugUnitTest --tests "com.itsaky.androidide.ai.*" --stacktrace
+
+      - name: Build debug APK(s)
+        working-directory: ${{ steps.extract.outputs.dir }}
+        run: ./gradlew :core:app:assembleDebug ${{ matrix.flags }} --stacktrace
+
+      - name: Collect APKs
+        run: |
+          mkdir -p out
+          find "${{ steps.extract.outputs.dir }}/core/app/build/outputs/apk" -name '*.apk' | while read -r f; do
+            base=$(basename "$f" .apk)
+            cp "$f" "out/DroidForge-${{ matrix.name }}-${base#app-}.apk"
+          done
+          ls -la out
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: DroidForge-${{ matrix.name }}
+          path: out/*.apk
+          compression-level: 0
+          if-no-files-found: error
