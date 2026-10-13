@@ -129,6 +129,11 @@ val fetchAiModels = tasks.register("fetchAiModels") {
 }
 
 if (aiBundledModels.isNotEmpty()) {
+  // The generated folder is added as a plain source dir below; make sure the models are
+  // downloaded before the assets of any variant are merged.
+  tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(fetchAiModels)
+  }
   android {
     sourceSets.getByName("main").assets.srcDir(files(aiAssetsDir).builtBy(fetchAiModels))
 

@@ -143,6 +143,10 @@ jobs:
             OUT="${OUT}tests: $(grep -E 'BUILD (SUCCESSFUL|FAILED)|tests completed' "$RUNNER_TEMP/logs/tests.log" | tr '\n' ' ')"
           fi
           echo "::notice title=APK check ${{ matrix.name }}::$OUT"
+          if [ -f "$RUNNER_TEMP/logs/tests.log" ] && grep -q "BUILD FAILED" "$RUNNER_TEMP/logs/tests.log"; then
+            T=$( { awk '/\* What went wrong:/{f=1} f{print} /\* Try:/{if(f) exit}' "$RUNNER_TEMP/logs/tests.log" | head -20; echo ---; grep -E "(^e: |error:|FAILED|AssertionError|Exception:)" "$RUNNER_TEMP/logs/tests.log" | head -20; } | sed 's/%/%25/g' | cut -c1-300 | awk '{printf "%s%%0A", $0}')
+            echo "::notice title=Unit test failure ${{ matrix.name }}::$T"
+          fi
 
       - name: Collect APKs
         run: |
