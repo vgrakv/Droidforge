@@ -40,6 +40,9 @@ jobs:
             # The APK is >2 GB; if the Android packaging tools refuse it, the other two still build.
             experimental: true
     continue-on-error: ${{ matrix.experimental }}
+    env:
+      # Fixed place for the debug keystore, so the build finds the one created below.
+      ANDROID_USER_HOME: ${{ github.workspace }}/../android-user-home
 
     steps:
       - name: Free disk space (bundled builds are big)
@@ -66,12 +69,13 @@ jobs:
         # Android Gradle Plugin would generate it itself, but with the build's BouncyCastle
         # libraries that fails ("NoSuchFieldError: xmss_SHAKE128_512ph"). keytool has no such issue.
         run: |
-          mkdir -p ~/.android
-          if [ ! -f ~/.android/debug.keystore ]; then
-            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android \
-              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
+          mkdir -p "$ANDROID_USER_HOME"
+          rm -f "$ANDROID_USER_HOME/debug.keystore"
+          keytool -genkeypair -keystore "$ANDROID_USER_HOME/debug.keystore" -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          ls -la "$ANDROID_USER_HOME"
+          mkdir -p ~/.android && cp "$ANDROID_USER_HOME/debug.keystore" ~/.android/debug.keystore
 
       - name: Cache Gradle
         uses: actions/cache@v4
