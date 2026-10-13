@@ -98,9 +98,15 @@ jobs:
 
       - name: Show why the build failed
         if: failure()
-        shell: bash
+        shell: bash {0}
         run: |
           LOG="$RUNNER_TEMP/logs/build.log"
+          if [ -f "$LOG" ]; then
+            ERR=$( { awk '/\* What went wrong:/{f=1} f{print} /\* Try:/{if(f) exit}' "$LOG" | head -25; echo ---; grep -E "(^e: |error:|Could not|FAILED|Exception)" "$LOG" | head -12; echo ---; tail -15 "$LOG"; } | sed 's/%/%25/g' | cut -c1-300 | awk '{printf "%s%%0A", $0}')
+          else
+            ERR="no build.log was produced"
+          fi
+          echo "::error title=Build ${{ matrix.name }} failed::$ERR"
           {
             echo "## Build ${{ matrix.name }} failed"
             if [ -f "$LOG" ]; then
@@ -118,13 +124,6 @@ jobs:
               echo "No Gradle log was produced (the build did not start)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-          # Also publish the reason as an annotation (visible on the run page and through the API).
-          if [ -f "$LOG" ]; then
-            MSG=$(awk '/\* What went wrong:/{f=1} f{print} /\* Try:/{if(f) exit}' "$LOG" | head -25 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-            [ -n "$MSG" ] || MSG=$(grep -E "(^e: |error:|Could not|FAILED|Exception)" "$LOG" | head -15 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-            [ -n "$MSG" ] || MSG=$(tail -30 "$LOG" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-            echo "::error title=Build ${{ matrix.name }} failed::$MSG"
-          fi
 
       - name: Collect APKs
         run: |
