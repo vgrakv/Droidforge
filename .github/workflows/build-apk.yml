@@ -129,6 +129,21 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Check what is inside the APKs
+        if: success()
+        shell: bash {0}
+        run: |
+          OUT=""
+          for f in $(find core/app/build/outputs/apk -name '*.apk'); do
+            SZ=$(du -m "$f" | cut -f1)
+            MODELS=$(unzip -l "$f" | grep -c "assets/ai-models/.*\.task$")
+            OUT="$OUT$(basename "$f"): ${SZ}MB, model files inside: $MODELS%0A"
+          done
+          if [ -f "$RUNNER_TEMP/logs/tests.log" ]; then
+            OUT="${OUT}tests: $(grep -E 'BUILD (SUCCESSFUL|FAILED)|tests completed' "$RUNNER_TEMP/logs/tests.log" | tr '\n' ' ')"
+          fi
+          echo "::notice title=APK check ${{ matrix.name }}::$OUT"
+
       - name: Collect APKs
         run: |
           mkdir -p out
