@@ -78,13 +78,10 @@ val Project.simpleVersionName: String
     }
 
     if (simpleVersion == null) {
-      if (CI.isTestEnv) {
-        return FALLBACK_VERSION
-      }
-
-      throw IllegalStateException(
-        "Cannot extract simple version name. Invalid version string '$version'. Version names must be SEMVER with 'v' prefix"
-      )
+      // A repository without release tags (e.g. a fork like this one) gets a Nyx version such as
+      // 'v0.1.0'. Use the fallback instead of failing the build.
+      logger.warn("Version '$version' has no SEMVER pre-release part. Using $FALLBACK_VERSION.")
+      return FALLBACK_VERSION
     }
 
     return simpleVersion
