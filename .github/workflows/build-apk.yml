@@ -1,8 +1,7 @@
 name: Build APKs from ZIP
 
-# Upload DroidForge-src.zip to the root of the repository (next to the .github folder).
-# Every push that adds/changes a .zip file builds three APKs. You can also run it by hand
-# from the "Actions" tab ("Run workflow").
+# The project sources live directly in this repository. Every push to the main branch builds
+# three APKs. You can also run it by hand from the "Actions" tab ("Run workflow").
 #
 #   lite   - no models inside. The app asks on first run which AI mode to use and downloads
 #            the models then (small download, needs internet).
@@ -10,12 +9,15 @@ name: Build APKs from ZIP
 #   hebrew - the small model AND the Hebrew translator are packed inside (~2.2 GB APK, offline).
 #
 # The heavy model (~3.9 GB) is too big to pack into an APK, so it is always downloaded
-# from the app's AI settings.
+# (or loaded from a file) from the app's AI settings.
+#
+# If a build fails, open the run page: the reason is shown in the "Summary" box at the top,
+# and the full Gradle log is attached at the bottom as "logs-<variant>".
 on:
   push:
-    paths:
-      - '*.zip'
-      - '.github/workflows/build-apk.yml'
+    branches: [main, master]
+    paths-ignore:
+      - '**.md'
   workflow_dispatch: {}
 
 jobs:
@@ -45,7 +47,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/node_modules || true
           df -h /
 
-      - name: Checkout (only to get the zip)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -54,22 +56,22 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Extract the zip OUTSIDE the git workspace
-        id: extract
-        run: |
-          set -e
-          ZIP=$(ls -t *.zip | head -n 1)
-          echo "Using $ZIP"
-          mkdir -p "$RUNNER_TEMP/proj"
-          unzip -q "$ZIP" -d "$RUNNER_TEMP/proj"
-          GRADLEW=$(find "$RUNNER_TEMP/proj" -maxdepth 3 -name gradlew | head -n 1)
-          [ -n "$GRADLEW" ] || { echo "gradlew not found inside the zip"; exit 1; }
-          DIR=$(dirname "$GRADLEW")
-          chmod +x "$GRADLEW"
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
 
       - name: Accept Android SDK licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Create the debug signing key with keytool
+        # Android Gradle Plugin would generate it itself, but with the build's BouncyCastle
+        # libraries that fails ("NoSuchFieldError: xmss_SHAKE128_512ph"). keytool has no such issue.
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -77,23 +79,50 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('*.zip') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
       - name: Unit tests of the AI helper (lite job only, non-blocking)
         if: matrix.name == 'lite'
         continue-on-error: true
-        working-directory: ${{ steps.extract.outputs.dir }}
-        run: ./gradlew :core:app:testDebugUnitTest --tests "com.itsaky.androidide.ai.*" --stacktrace
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          ./gradlew :core:app:testDebugUnitTest --tests "com.itsaky.androidide.ai.*" --stacktrace 2>&1 | tee "$RUNNER_TEMP/logs/tests.log"
 
       - name: Build debug APK(s)
-        working-directory: ${{ steps.extract.outputs.dir }}
-        run: ./gradlew :core:app:assembleDebug ${{ matrix.flags }} --stacktrace
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          ./gradlew :core:app:assembleDebug ${{ matrix.flags }} --stacktrace 2>&1 | tee "$RUNNER_TEMP/logs/build.log"
+
+      - name: Show why the build failed
+        if: failure()
+        shell: bash
+        run: |
+          LOG="$RUNNER_TEMP/logs/build.log"
+          {
+            echo "## Build ${{ matrix.name }} failed"
+            if [ -f "$LOG" ]; then
+              echo
+              echo "### What went wrong"
+              echo '```'
+              awk '/\* What went wrong:/{f=1} f{print} /\* Try:/{if(f) exit}' "$LOG" | head -60
+              echo '```'
+              echo
+              echo "### First error lines"
+              echo '```'
+              grep -E "(^e: |error:|Could not (find|resolve|get)|No matching variant|Execution failed)" "$LOG" | head -25
+              echo '```'
+            else
+              echo "No Gradle log was produced (the build did not start)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect APKs
         run: |
           mkdir -p out
-          find "${{ steps.extract.outputs.dir }}/core/app/build/outputs/apk" -name '*.apk' | while read -r f; do
+          find core/app/build/outputs/apk -name '*.apk' | while read -r f; do
             base=$(basename "$f" .apk)
             cp "$f" "out/DroidForge-${{ matrix.name }}-${base#app-}.apk"
           done
@@ -106,3 +135,11 @@ jobs:
           path: out/*.apk
           compression-level: 0
           if-no-files-found: error
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.name }}
+          path: ${{ runner.temp }}/logs/*.log
+          if-no-files-found: ignore
